@@ -84,7 +84,7 @@ dist.matrix(M, M2 = NULL, method = "cosine", p = 2,
         d_p(x, y) = \sum_i | x_i - y_i |^p}{ d_p(x, y) = SUM(i) |x_i - y_i|^p }
       for \eqn{0 \le p < 1}.  In the latter case, it is not homogeneous and cannot be derived from a corresponding mathematical norm (cf. \code{\link{rowNorms}}).
 
-      Special cases include the Euclidean metric \eqn{d_2(x, y)} for \eqn{p = 2} and the Manhattan metric \eqn{d_1(x, y)} for \eqn{p = 1}, but the dedicated methods above provide more efficient implementations.  For \eqn{p \to \infty}{p -> Inf}, \eqn{d_p(x, y)} converges to the maximum distance \eqn{d_{\infty}(x, y)}, but \code{p=Inf} is not allowed.  For \eqn{p = 0}, \eqn{d_p(x, y)} corresponds to the Hamming distance, i.e. the number of differences \deqn{
+      Special cases include the Euclidean metric \eqn{d_2(x, y)} for \eqn{p = 2} and the Manhattan metric \eqn{d_1(x, y)} for \eqn{p = 1}, but the dedicated methods above provide more efficient implementations.  For \eqn{p \to \infty}{p -> Inf}, \eqn{d_p(x, y)} converges to the maximum distance \eqn{d_{\infty}(x, y)}, which is also selected by setting \code{p=Inf}.  For \eqn{p = 0}, \eqn{d_p(x, y)} corresponds to the Hamming distance, i.e. the number of differences \deqn{
       d_0(x, y) = \#\{ i | x_i \ne y_i \}}{ #{i | x_i != y_i} }
     }
     \item{\code{canberra}}{The Canberra metric has been implemented for compatibility with the \code{\link{dist}} function, even though it is probably not very useful for DSM vectors.  It is given by \deqn{
@@ -97,22 +97,36 @@ dist.matrix(M, M2 = NULL, method = "cosine", p = 2,
     }
   }
 
-  In addition, the following similarity measures can be computed and optionally converted to a distance metric:
+  In addition, the following similarity measures can be computed and optionally converted to a distance metric (or dissimilarity):
   \describe{
     \item{\code{cosine} (default)}{The cosine similarity given by \deqn{
         \cos \phi = \frac{x^T y}{||x||_2 \cdot ||y||_2} 
       }{ cos(phi) = x' y / |x| |y| }
       If \code{normalized=TRUE}, the denominator is omitted. If \code{convert=TRUE} (the default), the cosine similarity is converted to angular distance \eqn{\phi}, given in degrees ranging from 0 to 180.
     }
+    \item{\code{jaccard}}{The generalized Jaccard coefficient given by \deqn{
+        J(x, y) = \frac{ \sum_i \min(x_i, y_i) }{ \sum_i \max(x_i, y_i) }
+      }{ J(x,y) = SUM(i) min(x_i, y_i) / SUM(i) max(x_i, y_i) }
+      which is only defined for non-negative vectors \eqn{x} and \eqn{y}.  If \code{convert=TRUE} (the default), the Jaccard metric \eqn{1 - J(x,y)} is returned (see Kosub 2016 for details).  Note that \eqn{J(0, 0) = 1}.
+    }
+    \item{\code{overlap}}{An asymmetric measure of overlap given by \deqn{
+        o(x, y) = \frac{ \sum_i \min(x_i, y_i) }{ \sum_i x_i }
+      }{ o(x,y) = SUM(i) min(x_i, y_i) / SUM(i) x_i }
+      for non-negative vectors \eqn{x} and \eqn{y}. If \code{convert=TRUE} (the default), the result is converted into a dissimilarity measure \eqn{1 - o(x,y)}, which is not a metric, of course.  Note that \eqn{o(0, y) = 1} and in particular \eqn{o(0, 0) = 1}.
 
-  }  
+      Overlap computes the proportion of the \dQuote{mass} of \eqn{x} that is shared with \eqn{y}; as a consequence, \eqn{o(x, y) = 1} whenever \eqn{x \le y}{x <= y}.  If both vectors are normalized as probability distributions (\eqn{||x||_1 = ||y||_1 = 1}{|x|_1 = |y|_1 = 1}) then overlap is symmetric (\eqn{o(x, y) = o(y, x)}) and can be thought of as the shared probability mass of the two distributions.  In this case, \code{normalized=TRUE} can be passed in order to simplify the computation to \eqn{o(x, y) = \sum_i \min(x_i, y_i)}{o(x, y) = SUM(i) min(x_i, y_i)}.
+    }
+    
+  }
 
 }
 %% \references{
 %% }
 \seealso{
   
-  \code{\link{rowNorms}}
+  \code{\link[=plot.dist.matrix]{plot}} and \code{\link[=head.dist.matrix]{head}} methods for distance matrices; \code{\link{nearest.neighbours}} and \code{\link{pair.distances}} also accept a precomputed \code{dist.matrix} object instead of a DSM matrix \code{M}
+  
+  \code{\link{rowNorms}} for length normalization of DSM vectors, which is highly recommended for most distance metrics (and implicit in \code{cosine})
 
 }
 \examples{

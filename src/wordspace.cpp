@@ -77,6 +77,33 @@ double am_tf_idf(double f, double f1, double f2, double N, int sparse) {
   return (f2 > 0) ? f * log(N / f2) : 0; /* avoid division by zero if f2 == 0 */
 }
 
+double am_log_likelihood(double f, double f1, double f2, double N, int sparse) {
+  double R1 = f1, R2 = N - f1, C1 = f2, C2 = N - f2;
+  double O11 = f, O12 = R1 - f, O21 = C1 - f, O22 = C2 - O12;
+  double E11 = R1 * C1 / N, E12 = R1 * C2 / N, E21 = R2 * C1 / N, E22 = R2 * C2 / N;
+  double G2 =
+    ((O11 > 0) ? O11 * log(O11 / E11) : 0) +
+    ((O12 > 0) ? O12 * log(O12 / E12) : 0) +
+    ((O21 > 0) ? O21 * log(O21 / E21) : 0) +
+    ((O22 > 0) ? O22 * log(O22 / E22) : 0);
+  if (sparse)
+    return (O11 > E11) ? 2 * G2 : 0;
+  else
+    return (O11 >= E11) ? 2 * G2 : -2 * G2;
+}
+
+double am_chi_squared(double f, double f1, double f2, double N, int sparse) {
+  double R1 = f1, R2 = N - f1, C1 = f2, C2 = N - f2;
+  double O11 = f, O12 = R1 - f, O21 = C1 - f, O22 = C2 - O12;
+  double E11 = R1 * C1 / N;
+  double yates = abs(O11 * O22 - O12 * O21) - N / 2;
+  double X2 = N * yates * yates / (R1 * R2 * C1 * C2);
+  if (sparse)
+    return (O11 > E11) ? X2 : 0;
+  else
+    return (O11 >= E11) ? X2 : -X2;
+}
+
 double transform(double x, int method) {
   switch (method) {
     case 0:       /* 0 = none */
@@ -93,7 +120,7 @@ double transform(double x, int method) {
   }
 }
 
-int am_table_entries = 7;
+int am_table_entries = 9;
 
 am_func am_table[] = {
   &am_frequency,
@@ -103,18 +130,26 @@ am_func am_table[] = {
   &am_Dice,
   &am_MI,
   &am_tf_idf,
+  &am_log_likelihood,
+  &am_chi_squared
 };
 
 /*
  *  Compute distances between columns of two dense or sparse matrices
  */
 
-/* internal codes for metric / distance:
+/* Internal codes for metric / distance:
  *  0 = euclidean
  *  1 = maximum
  *  2 = manhattan
  *  3 = minkowski   (*param1 = exponent p)
  *  4 = canberra
+ *  5 = jaccard
+ *  6 = minimum     (asymmetric jaccard without normalization)
+ *
+ * Reference implementations are in CPP_col_dist_dense(), with comments if necessary.
+ * Sparse matrix code in CPP_col_dist_sparse() is often more complex and should be
+ * read after consulting the reference implementation.
  */
 
 /* make symmetric matrix from right upper triangle */
@@ -129,7 +164,7 @@ void mk_symmetric_matrix(NumericMatrix x) {
 
 /* validate metric code and parameter(s) */
 void check_metric(int metric_code, double p1) {
-  if (metric_code < 0 || metric_code > 4)
+  if (metric_code < 0 || metric_code > 6)
     stop("internal error -- invalid metric code");
   if (metric_code == 3 && (!R_FINITE(p1) || p1 < 0.0))
     stop("internal error -- Minkowski p-parameter out of range [0, Inf)");  
@@ -149,7 +184,7 @@ NumericMatrix CPP_col_dist_dense(NumericMatrix x, NumericMatrix y, int metric_co
         shared(dist)
   for (int col2 = 0; col2 < nc2; col2++) {
     NumericVector tmp(nr);
-    double accum;
+    double accum, denom;
     int col1_max = (symmetric) ? col2 + 1 : nc1;
     for (int col1 = 0; col1 < col1_max; col1++) {
       NumericMatrix::Column vx = x(_, col1);  // column <col1> of first matrix
@@ -175,6 +210,14 @@ NumericMatrix CPP_col_dist_dense(NumericMatrix x, NumericMatrix y, int metric_co
       case 4:
         tmp = abs(vx) + abs(vy); // denominator |x_i| + |y_i|
         dist(col1, col2) = sum(ifelse(tmp > 0, abs(vx - vy) / tmp, 0.0));
+        break;
+      case 5:
+        accum = sum(pmin(vx, vy)); /* x_i and y_i must be non-negative */
+        denom = sum(pmax(vx, vy));
+        dist(col1, col2) = (denom > 0) ? accum / denom : 1.0; /* special case: J(0, 0) = 1 */
+        break;
+      case 6:
+        dist(col1, col2) = sum(pmin(vx, vy)); /* overlap of probability distributions (if ||x||_1 = ||y||_1 = 1) */
         break;
       }
     }
@@ -214,7 +257,7 @@ NumericMatrix CPP_col_dist_sparse(int nc1, IntegerVector xp, IntegerVector xrow,
       int xrow_curr = (xi < xi_max) ? _xrow[xi] : INT_MAX;
       int yrow_curr = (yi < yi_max) ? _yrow[yi] : INT_MAX;
       
-      double accum = 0.0;
+      double accum = 0.0, denom = 0.0;
       double x_curr, y_curr;
       double d_xy, x_plus_y;
       while (xi < xi_max || yi < yi_max) {
@@ -258,6 +301,18 @@ NumericMatrix CPP_col_dist_sparse(int nc1, IntegerVector xp, IntegerVector xrow,
           d_xy = fabs(x_curr - y_curr);
           if (x_plus_y > 0) accum += d_xy / x_plus_y;
           break;
+        case 5:
+          if (x_curr >= y_curr) {
+            accum += y_curr;  /* min(x_i, y_i) */
+            denom += x_curr; /* max(x_i, y_i) */
+          }
+          else {
+            accum += x_curr;
+            denom += y_curr;
+          }
+          break;
+        case 6:
+          accum += (x_curr >= y_curr) ? y_curr : x_curr; /* min(x_i, y_i) */
         }
       } /* while (xi, yi) */
 
@@ -265,16 +320,20 @@ NumericMatrix CPP_col_dist_sparse(int nc1, IntegerVector xp, IntegerVector xrow,
       case 0:
         dist(col1, col2) = sqrt(accum);
         break;
-      case 1:
-      case 2:
-      case 4:
-        dist(col1, col2) = accum;
-        break;
       case 3:
         if (param1 > 1.0)
           dist(col1, col2) = pow(accum, 1.0 / param1);
         else
           dist(col1, col2) = accum;
+        break;
+      case 5:
+        dist(col1, col2) = (denom > 0) ? accum / denom : 1.0; /* (SUM min(x_i, y_i)) / (SUM max(x_i, y_i)) */
+        break;
+      case 1:
+      case 2:
+      case 4:
+      case 6:
+        dist(col1, col2) = accum;
         break;
       }
 
@@ -659,11 +718,12 @@ NumericVector CPP_dsm_score_sparse(int nr, int nc, IntegerVector p, IntegerVecto
 
 /* internal codes for type of transformation
  *  0 = cosine -> angle
+ *  1 = sim -> d = 1 - sim
 */
 
 // [[Rcpp::export]]
 NumericMatrix CPP_similarity_to_distance(NumericMatrix M, int opcode, double tol, bool duplicate = true) {
-  if (!R_FINITE(opcode) || opcode < 0 || opcode > 0)
+  if (!R_FINITE(opcode) || opcode < 0 || opcode > 1)
     stop("internal error -- invalid transformation method code");
 
   unsigned int n_items = M.length();
@@ -676,17 +736,20 @@ NumericMatrix CPP_similarity_to_distance(NumericMatrix M, int opcode, double tol
   for (unsigned int i = 0; i < n_items; i++) {
     double x = _res[i];
     switch (opcode) {
-      case 0:
-        if (x < -(1-tol)) {
-          if (x < -(1+tol)) n_clamped++;
-          x = -1;
-        }
-        else if (x > (1-tol)) {
-          if (x > (1+tol)) n_clamped++;
-          x = 1;
-        }
-        x = acos(x) * 180 / M_PI; 
-        break;
+    case 0:
+      if (x < -(1-tol)) {
+        if (x < -(1+tol)) n_clamped++;
+        x = -1;
+      }
+      else if (x > (1-tol)) {
+        if (x > (1+tol)) n_clamped++;
+        x = 1;
+      }
+      x = acos(x) * 180 / M_PI; 
+      break;
+    case 1:
+      x = 1 - x;
+      break;
     }
     _res[i] = x;
   }
@@ -696,3 +759,48 @@ NumericMatrix CPP_similarity_to_distance(NumericMatrix M, int opcode, double tol
 
   return res;
 }
+// Various smaller utility functions implemented in C++ for efficiency and reduced memory overhead.
+
+
+// Efficient nonzero count and non-negativity check for dense and sparse matrices,
+// based on counting the signs (pos, 0, neg) of values in a numeric vector.
+// [[Rcpp::export]]
+NumericVector CPP_signcount(NumericVector x) {
+  int pos = 0, neg = 0, zero = 0;
+  int n = x.size();
+  NumericVector::iterator _x = x.begin();
+  for (int i = 0; i < n; i++) {
+    if (_x[i] > 0.0)
+      pos++;
+    else if (_x[i] < 0.0)
+      neg++;
+    else
+      zero++;
+  }
+  return NumericVector::create(pos, zero, neg);
+}
+
+// Same for integer vector to avoid memory overhead from automatic type conversion.
+// [[Rcpp::export]]
+NumericVector CPP_signcount_int(IntegerVector x) {
+  int pos = 0, neg = 0, zero = 0;
+  int n = x.size();
+  IntegerVector::iterator _x = x.begin();
+  for (int i = 0; i < n; i++) {
+    if (_x[i] > 0.0)
+      pos++;
+    else if (_x[i] < 0.0)
+      neg++;
+    else
+      zero++;
+  }
+  return NumericVector::create(pos, zero, neg);
+}
+
+
+// TODO: implement integer version (to avoid conversion)
+// TODO: R wrapper function
+//  - is.integer
+//  - is.double
+//  - Matrix classes: dgeMatrix (dense), dgCMatrix, dgRMatrix, dgTMatrix (with adjusted zero count) -- all should have slot @x
+//  - Matrix doesn't seem to really support integer matrices yet, so we don't worry abpout those

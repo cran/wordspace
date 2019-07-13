@@ -17,22 +17,23 @@ dsm.score(model, score = "frequency",
           sparse = TRUE, negative.ok = NA,
           transform = c("none", "log", "root", "sigmoid"),
           scale = c("none", "standardize", "center", "scale"),
-          normalize = FALSE, method = "euclidean", p = 2,
-          matrix.only = FALSE, update.nnzero = FALSE)
+          normalize = FALSE, method = "euclidean", p = 2, tol = 1e-6,
+          matrix.only = FALSE, update.nnzero = FALSE,
+          batchsize = 1e6, gc.iter = Inf)
 
 }
 \arguments{
   
   \item{model}{a DSM model, i.e. an object of class \code{dsm}}
 
-  \item{score}{the association measure to be used for feature weighting (see \dQuote{Details} below)}
+  \item{score}{the association measure to be used for feature weighting; either a character string naming one of the built-in measures or a user-defined function (see \dQuote{Details} below)}
 
   \item{sparse}{if \code{TRUE} (the default), compute sparse non-negative association scores (see \dQuote{Details} below).
     Non-sparse association scores are only allowed if \code{negative.ok=TRUE}.
   }
 
   \item{negative.ok}{whether operations that introduce negative values into the score matrix (non-sparse association scores, standardization of columns, etc.) are allowed.
-    The default (\code{negative.ok=NA}) is \code{TRUE} if the co-occurrence matrix \eqn{M} is dense, and \code{FALSE} if it is sparse.
+    The default (\code{negative.ok=NA}) is \code{TRUE} if the co-occurrence matrix \eqn{M} is dense, and \code{FALSE} if it is sparse.  See \dQuote{Details} below for the special value \code{negative.ok="nonzero"}. 
   }
     
   \item{transform}{scale transformation to be applied to association scores (see \dQuote{Details} below)}
@@ -45,14 +46,26 @@ dsm.score(model, score = "frequency",
     See \code{\link{rowNorms}} for admissible values and details on the corresponding norms
   }
   
+  \item{tol}{if \code{normalize=TRUE}, row vectors with norm below \code{tol} are explicitly set to all zeroes instead of attempting to normalize them (see \code{\link{normalize.rows}} for more information)}
+  
   \item{matrix.only}{whether to return updated DSM model (default) or only the matrix of scores (\code{matrix.only=TRUE})}
   
   \item{update.nnzero}{if \code{TRUE} and a full DSM model is returned, update the counts of nonzero entries in rows and columns according to the matrix of scores (there may be fewer nonzero entries with sparse association scores, or more from dense association scores and/or column scaling)}
 
+  \item{batchsize}{if \code{score} is a user-defined function, the co-occurrence matrix is divided into blocks of approx. \code{batchsize} elements each in order to reduce memory overhead}
+
+  \item{gc.iter}{how often to run the garbage collector when computing user-defined association scores; \code{gc()} is called after every \code{gc.iter} batches in order to reclaim temporary data and keep memory overhead as low as possible. This option should only be specified if memory is very tight, since garbage collector runs can be expensive (e.g. when there are many distinct strings in the workspace). With the default value \code{gc.iter=Inf}, no calls to \code{gc()} will be made; \code{gc.iter=4} seems to give a good trade-off between memory overhead and degraded performance.}
 }
 \details{
   \subsection{Association measures}{
-    The following association measures can be used for feature scoring. Equations are given in the notation of Evert (2008). The most important symbols are \eqn{O_{11}}{E11} for the observed co-occurrence frequency, \eqn{E_{11}}{O11} for the co-occurrence frequency expected under a null hypothesis of independence, \eqn{R_1}{R1} for the marginal frequency of the target term, \eqn{C_1}{C1} for the marginal frequency of the feature term or context, and \eqn{N} for the sample size of the underlying corpus.  Evert (2008) explains in detail how these values are computed for different types of co-occurrence.
+    Association measures (AM) for feature scoring are defined in the notation of Evert (2008).  The most important symbols are \eqn{O_{11} = O}{O11 = O} for the observed co-occurrence frequency, \eqn{E_{11} = E}{E11 = E} for the co-occurrence frequency expected under a null hypothesis of independence, \eqn{R_1}{R1} for the marginal frequency of the target term, \eqn{C_1}{C1} for the marginal frequency of the feature term or context, and \eqn{N} for the sample size of the underlying corpus.  Evert (2008) explains in detail how these values are computed for different types of co-occurrence; practical examples can be found in the distributional semantics tutorial at \url{http://wordspace.collocations.de/}.
+
+    Several commonly used AMs are implemented in optimized C++ code for efficiency and minimal memory overhead.  They are selected by name, which is passed as a character string in the \code{score} argument.  See below for a list of built-in measures and their full equations.
+    
+    Other AMs can be applied by passing a user-defined function in the \code{score} argument. See \dQuote{User-defined association measures} at the end of this section for details.
+  }
+  \subsection{Built-in association measures}{
+    The names of the following measures can be abbreviated to a unique prefix. Equations are given in the notation of Evert (2008).
     
     \describe{
       \item{\code{frequency} (default)}{
@@ -69,19 +82,38 @@ dsm.score(model, score = "frequency",
         
         The sparse version of MI (with negative scores cut off at 0) is sometimes referred to as "positive pointwise Mutual Information" (\bold{PPMI}) in the literature.
       }
+      \item{\code{log-likelihood}}{
+        The \eqn{G^2} statistic of a likelihood ratio test for independence of rows and columns in a contingency table, which is very popular in computational linguistics under the name \bold{log-likelihood}: \deqn{
+          \pm 2 \left( \sum_{ij} O_{ij}\cdot \log \frac{O_{ij}}{E_{ij}} \right)
+        }{ ± 2 * ( SUM[ij] Oij * log(Oij / Eij) ) }
+        This implementation computes \emph{signed} association scores, which are negative iff \eqn{O_{11} < E_{11}}{O11 < E11}.
+        Log-likelihood has a strong bias towards high co-occurrence frequency and often produces a highly skewed distribution of scores. It may therefore be advisable to combine it with an additional \code{log} transformation.
+      }
       \item{\code{simple-ll}}{
         Simple \bold{log-likelihood} (Evert 2008, p. 1225): \deqn{
           \pm 2 \left( O_{11}\cdot \log \frac{O_{11}}{E_{11}} - (O_{11} - E_{11}) \right)
         }{ ± 2 * ( O11 * log(O11 / E11) - (O11 - E11) ) }
-        This measure provides a good approximation to the full log-likelihood measure (Evert 2008, p. 1235), but can be computed much more efficiently. It is also very similar to the \bold{local-MI} measure used by several popular DSMs. The implementation used here computes \emph{signed} association scores, which are negative iff \eqn{O_{11} < E_{11}}{O11 < E11}.
-        
-        Log-likelihood has a strong bias towards high co-occurrence frequency and often produces a highly skewed distribution of scores. It may therefore be advisable to combine it with an additional \code{log} transformation.
+        This measure provides a good approximation to the full log-likelihood measure (Evert 2008, p. 1235), but can be computed much more efficiently. It is also very similar to the \bold{local-MI} measure used by several popular DSMs.
+
+        Like \code{log-likelihood}, this measure computes \emph{signed} association scores and has a strong bias towards high co-occurrence frequency.
       }
       \item{\code{t-score}}{
         The \bold{t-score} association measure, which is popular for collocation identification in computational lexicography: \deqn{
           \frac{O_{11} - E_{11}}{\sqrt{O_{11}}}
         }{ (O11 - E11) / sqrt(O11) }
-        T-score is known to filter out low-frequency data effectively.
+        T-score is known to filter out low-frequency data effectively.  If used as a non-sparse measure, a \dQuote{discounted} version with \eqn{\sqrt(O + 1)} in the denominator is computed.
+      }
+      \item{\code{chi-squared}}{
+        The \eqn{X^2} statistic of Pearson's \bold{chi-squared} test for independence of rows and columns in a contingency table, with Yates's correction applied: \deqn{
+          \pm \frac{
+            N \bigl( | O_{11}O_{22} - O_{12} O_{21} | - N/2 \bigr)^2
+          }{
+            R_1 R_2 C_1 C_2
+          }
+        }{ ± N * (|O12 * O22 - O12 * O21| - N/2)^2 / (R1 * R2 * C1 * C2) }
+        This implementation computes \emph{signed} association scores, which are negative iff \eqn{O_{11} < E_{11}}{O11 < E11}.
+
+        The formula above gives a more compact form of Yates's correction than the familiar sum over the four cells of the contingency table.
       }
       \item{\code{z-score}}{
         The \bold{z-score} association measure, based on a normal approximation to the binomial distribution of co-occurrence by chance: \deqn{
@@ -117,6 +149,8 @@ dsm.score(model, score = "frequency",
     If \code{sparse=TRUE}, negative association scores are cut off at 0 in order to (i) ensure that the scored matrix is non-negative and (ii) preserve sparseness.  The implementation assumes that association scores are always \eqn{\leq 0}{≤ 0} for \eqn{O_{11} = 0}{O11 = 0} in this case and only computes scores for nonzero entries in a sparse matrix.  All built-in association measures satisfy this criterion.
     
     Other researchers sometimes refer to such sparse scores as "positive" measures, most notably positive point-wise Mutual Information (PPMI). Since \code{sparse=TRUE} is the default setting, \code{score="MI"} actually computes the PPMI measure.
+
+    Non-sparse association scores can only be computed if \code{negative.ok=TRUE} and will force a dense matrix representation. For this reason, the default is \code{FALSE} for a sparse co-occurrence matrix and \code{TRUE} for a dense one.  A special setting \code{negative.ok="nonzero"} is provided for those who wish to abuse \code{dsm.score} for collocation analysis.  In combination with \code{sparse=FALSE}, it will allow negative score values, but compute them only for the nonzero entries of a sparse co-occurrence matrix.  For a dense co-occurrence matrix, this setting is fully equivalent to \code{negative.ok=TRUE}.
   }
   \subsection{Scale transformations}{
     Association scores can be re-scaled with an isotonic transformation function that preserves sign and ranking of the scores. This is often done in order to de-skew the distribution of scores or as an approximate binarization (presence vs. absence of features).  The following built-in transformations are available:
@@ -142,6 +176,32 @@ dsm.score(model, score = "frequency",
         }{ f(x) = tanh(x) }
       }
     }
+  }
+  \subsection{User-defined association measures}{
+     Instead of the name of a built-in AM, a function implementing a user-defined measure can be passed in the \code{score} argument. This function will be applied to the co-occurrence matrix in batches of approximately \code{batchsize} elements in order to limit the memory overhead incurred. A user-defined AM can be combined with any of the transformations above, and \code{sparse=TRUE} will cut off all negative scores.
+     
+     The user function can use any of following arguments to access the contingency tables of observed and expected frequencies, following the notation of Evert (2008):
+     \describe{
+       \item{\code{O}, \code{E}}{observed and expected co-occurrence frequency}
+       \item{\code{R1}, \code{R2}, \code{C1}, \code{C2}}{the row and column marginals of the contingency table}
+       \item{\code{N}}{sample size}
+       \item{\code{f}, \code{f1}, \code{f2}}{the frequency signature of a target-feature pair, a different notation for \eqn{f = O}{f = O}, \eqn{f_1 = R_1}{f1 = R1} and \eqn{f_2 = C_1}{f2 = C1}}
+       \item{\code{O11}, \code{O12}, \code{O21}, \code{O22}}{the contingency table of observed frequencies}
+       \item{\code{E11}, \code{E12}, \code{E21}, \code{E22}}{the contingency table of expected frequencies}
+       \item{\code{rows}}{a data frame containing information about the target items (from the \code{rows} element of \code{model})}
+       \item{\code{cols}}{a data frame containing information about the feature items (from the \code{cols} element of \code{model})}
+       \item{\code{\dots}}{must be specified to ignore unused arguments}
+    }
+    Except for \code{rows} and \code{cols}, all these arguments will be numeric vectors of the same lengths or scalar values (\code{N}), and the function must return a numeric vector of the same length.
+     
+    For example, the built-in Mutual Information measure could also be implemented with the user function
+    \preformatted{    my.MI <- function (O, E, ...) log2(O / E) }
+    and tf.idf scoring could be implemented as follows, provided that the feature information table \code{model$cols} contains a column \code{df} with relative document frequencies:
+    \preformatted{    my.tfidf <- function (O11, cols, ...) O11 * log(1 / cols$df)
+    dsm.score(model, score=my.tfidf)}
+     
+     
+     \bold{Warning:} User-defined AMs are much less efficient than the built-in measures and should only be used on large data sets if there is a good reason to do so. Increasing \code{batchsize} may speed up the computation to some degree at the expense of bigger memory overhead.
   }
 }
 \value{
@@ -170,7 +230,21 @@ round(model$S, 3) # PPMI scores
   
 model <- dsm.score(model, score="reweight", transform="sigmoid")
 round(model$S, 3) # additional sigmoid transformation
-  
+
+## user-defined scoring functions can implement additional measures,
+## e.g. the conditional probability Pr(feature | target) as a percentage
+my.CP <- function (O11, R1, ...) 100 * O11 / R1  # "..." is mandatory
+model <- dsm.score(model, score=my.CP)
+round(model$S, 3)
+
+## shifted PPMI (with k = 2) creates all-zero rows and columns
+model <- dsm.score(model, score=function (O, E, ...) log2(O / E) - 2,
+                   normalize=TRUE, update.nnzero=TRUE)
+round(model$S, 3) # normalization preserves all-zero rows
+## use subset to remove such rows and columns
+m2 <- subset(model, nnzero > 0, nnzero > 0) # must have updated nnzero counts
+round(m2$S, 3)
+
 \dontrun{
 # visualization of the scale transformations implemented by dsm.score
 x <- seq(-2, 4, .025)
