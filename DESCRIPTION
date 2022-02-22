@@ -1,11 +1,10 @@
 Package: wordspace
 Type: Package
 Title: Distributional Semantic Models in R
-Version: 0.2-6
-Date: 2019-12-26
-Author: Stefan Evert [http://www.stefan-evert.de/]
-Maintainer: Stefan Evert <stefan.evert@fau.de>
-Depends: R (>= 3.0.0), Matrix
+Version: 0.2-7
+Date: 2022-02-22
+Authors@R: person("Stephanie", "Evert", email="stephanie.evert@fau.de", role=c("cre", "aut"), comment=c(ORCID="0000-0002-4192-2437"))
+Depends: R (>= 3.3.0), Matrix
 Imports: Rcpp (>= 0.11.0), sparsesvd, iotools, methods, stats, utils,
         graphics, grDevices, cluster, MASS
 LinkingTo: Rcpp
@@ -18,6 +17,8 @@ LazyDataCompression: xz
 Suggests: knitr, rmarkdown, tm, testthat
 VignetteBuilder: knitr
 NeedsCompilation: yes
-Packaged: 2019-12-29 11:55:05 UTC; evert
+Packaged: 2022-02-22 07:50:34 UTC; evert
+Author: Stephanie Evert [cre, aut] (<https://orcid.org/0000-0002-4192-2437>)
+Maintainer: Stephanie Evert <stephanie.evert@fau.de>
 Repository: CRAN
-Date/Publication: 2020-01-08 23:00:02 UTC
+Date/Publication: 2022-02-22 09:20:02 UTC
